@@ -1,7 +1,9 @@
 # init_db.py
 import sqlite3
-from database import db_instance, get_db_cursor
-from datetime import datetime, time
+import os
+from database import db_instance, get_db_cursor, DATABASE_PATH
+from datetime import datetime, time, date, timedelta
+
 
 def create_tables():
     """Создание всех таблиц согласно схеме"""
@@ -278,8 +280,6 @@ def seed_test_data():
         """, schedule_data)
 
         # 7. Добавляем посещаемость за последнюю неделю
-        from datetime import date, timedelta
-
         attendance_data = []
         today = date.today()
         for i, enrollment in enumerate([(1, 2), (2, 1), (3, 3), (4, 4)], start=1):
@@ -302,8 +302,9 @@ def seed_test_data():
             ("Нина Соколова", "+79991112233", "nina@example.com", "Артём Соколов", 8, 2, "Школа №4", 1, "day", 2, "new",
              None, None, None),
             (
-            "Виктор Морозов", "+79885556677", None, "Дарья Морозова", 6, 0, "Школа №5", 1, "day", 2, "processing", None,
-            None, None),
+                "Виктор Морозов", "+79885556677", None, "Дарья Морозова", 6, 0, "Школа №5", 1, "day", 2, "processing",
+                None,
+                None, None),
         ]
 
         cursor.executemany("""
@@ -318,3 +319,171 @@ def seed_test_data():
         print(f"   - Parents: {cursor.execute('SELECT COUNT(*) FROM parents').fetchone()[0]}")
         print(f"   - Children: {cursor.execute('SELECT COUNT(*) FROM children').fetchone()[0]}")
         print(f"   - Enrollments: {cursor.execute('SELECT COUNT(*) FROM enrollments').fetchone()[0]}")
+
+
+def drop_all_tables():
+    """
+    Удаляет ВСЕ таблицы из базы данных (без пересоздания)
+    Полезно для чистого сброса перед миграциями
+    """
+    with get_db_cursor() as cursor:
+        # Получаем список всех таблиц (исключая системные)
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        tables = cursor.fetchall()
+
+        if not tables:
+            print("ℹ️ No tables found to drop")
+            return
+
+        # Отключаем проверку внешних ключей временно
+        cursor.execute("PRAGMA foreign_keys = OFF")
+
+        # Удаляем каждую таблицу
+        for table in tables:
+            table_name = table[0]
+            cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+            print(f"   Dropped table: {table_name}")
+
+        # Включаем проверку внешних ключей обратно
+        cursor.execute("PRAGMA foreign_keys = ON")
+
+    print(f"✅ Dropped {len(tables)} tables successfully")
+
+
+def reset_database():
+    """
+    ПОЛНЫЙ СБРОС БАЗЫ ДАННЫХ (только для разработки!)
+    Удаляет все таблицы и создаёт их заново с тестовыми данными
+    """
+    print("🔄 Starting database reset...")
+
+    # Удаляем все таблицы
+    drop_all_tables()
+
+    # Пересоздаём таблицы и заполняем тестовыми данными
+    create_tables()
+    seed_test_data()
+
+    print("✅ Database reset completed successfully!")
+
+
+def recreate_database():
+    """
+    Полностью пересоздаёт базу данных:
+    1. Закрывает существующее соединение
+    2. Удаляет файл БД
+    3. Создаёт всё заново
+    """
+    import os
+    from database import db_instance, DATABASE_PATH
+
+    print("🔄 Recreating database from scratch...")
+
+    # Закрываем текущее соединение, если оно открыто
+    db_instance.close()
+
+    # Удаляем файл базы данных
+    if os.path.exists(DATABASE_PATH):
+        os.remove(DATABASE_PATH)
+        print(f"🗑️ Removed database file: {DATABASE_PATH}")
+
+    # Создаём таблицы и заполняем данными
+    create_tables()
+    seed_test_data()
+
+    print("✅ Database recreated from scratch!")
+
+
+def reset_database_safe():
+    """
+    Безопасная версия сброса с подтверждением
+    """
+    response = input("⚠️ WARNING: This will delete ALL data! Type 'yes' to continue: ")
+    if response.lower() == 'yes':
+        reset_database()
+        print("✅ Database reset completed!")
+    else:
+        print("❌ Reset cancelled")
+
+
+def show_tables():
+    """Показать список всех таблиц в базе данных"""
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        tables = cursor.fetchall()
+
+        if not tables:
+            print("ℹ️ No tables found")
+            return
+
+        print("\n📋 Tables in database:")
+        print("-" * 30)
+        for table in tables:
+            # Получаем количество записей в таблице
+            cursor.execute(f"SELECT COUNT(*) FROM {table[0]}")
+            count = cursor.fetchone()[0]
+            print(f"   {table[0]}: {count} records")
+        print("-" * 30)
+
+
+def get_database_info():
+    """Получить подробную информацию о базе данных"""
+    import os
+    from database import DATABASE_PATH
+
+    print("\n📊 Database Information:")
+    print("=" * 40)
+
+    # Проверяем существует ли файл БД
+    if os.path.exists(DATABASE_PATH):
+        size = os.path.getsize(DATABASE_PATH)
+        print(f"📁 File: {DATABASE_PATH}")
+        print(f"💾 Size: {size} bytes ({size / 1024:.2f} KB)")
+    else:
+        print(f"❌ Database file not found: {DATABASE_PATH}")
+        return
+
+    # Показываем таблицы
+    show_tables()
+
+    print(f"\n🔧 SQLite version: {sqlite3.sqlite_version}")
+    print("=" * 40)
+
+
+# Если запускаем файл напрямую
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) < 2:
+        print("\n📚 Database Management Script")
+        print("=" * 40)
+        print("Usage:")
+        print("  python init_db.py create    - Create tables")
+        print("  python init_db.py seed      - Seed test data")
+        print("  python init_db.py reset     - Reset database (drop + create + seed)")
+        print("  python init_db.py drop      - Drop all tables")
+        print("  python init_db.py recreate  - Recreate database from scratch")
+        print("  python init_db.py show      - Show all tables")
+        print("  python init_db.py info      - Show database information")
+        print("=" * 40)
+        sys.exit(0)
+
+    command = sys.argv[1]
+
+    if command == "create":
+        create_tables()
+    elif command == "seed":
+        seed_test_data()
+    elif command == "reset":
+        reset_database()
+    elif command == "drop":
+        drop_all_tables()
+    elif command == "recreate":
+        recreate_database()
+    elif command == "show":
+        show_tables()
+    elif command == "info":
+        get_database_info()
+    else:
+        print(f"❌ Unknown command: {command}")
+        print("Use: create, seed, reset, drop, recreate, show, info")
