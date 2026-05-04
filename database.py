@@ -5,7 +5,6 @@ from fastapi import FastAPI, Depends, HTTPException
 
 DATABASE_PATH = "swim_crm.db"  # файл базы данных
 
-
 class Database:
     """Класс для управления подключением к SQLite"""
 
@@ -33,17 +32,14 @@ class Database:
             self._connection.close()
             self._connection = None
 
-
 # Глобальный экземпляр БД
 db_instance = Database()
-
 
 @contextmanager
 def get_db_cursor():
     """
     Контекстный менеджер для работы с курсором.
     Автоматически управляет транзакциями.
-
     Использование:
     with get_db_cursor() as cursor:
         cursor.execute("SELECT * FROM users")
@@ -60,7 +56,6 @@ def get_db_cursor():
     finally:
         cursor.close()
 
-
 def get_db():
     """
     Dependency для FastAPI.
@@ -68,7 +63,6 @@ def get_db():
     """
     with get_db_cursor() as cursor:
         yield cursor
-
 
 # Функция для инициализации БД (будет вызвана при старте)
 def init_database(app: FastAPI):
