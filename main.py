@@ -1,13 +1,14 @@
 # main.py
 
 import secrets
+import json
 from contextlib import asynccontextmanager
 from typing import Annotated, Optional
 from datetime import date, datetime, timedelta
 
 from fastapi import (
     FastAPI, Request, HTTPException, Depends, status,
-    Form, UploadFile, File, Cookie)
+    Form, UploadFile, File, Cookie, Query)
 
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -99,41 +100,17 @@ def get_current_user(
 
 
 # Проверка ролей/прав
-def require_parent(request: Request, current_user: Optional[dict]):
+def require_parent(current_user: Optional[dict]):
     if not current_user or current_user["type"] != "parent":
-        return templates.TemplateResponse(
-            request,
-            "access_denied.html",
-            {
-                "request": request,
-                "message": "Эта страница доступна только родителям."
-            }
-        )
-    return None
+        raise HTTPException(status_code=403, detail="Доступ только для родителей")
 
-def check_trainer(request: Request, current_user: Optional[dict]):
+def require_trainer(current_user: Optional[dict]):
     if not current_user or current_user["type"] != "trainer":
-        return templates.TemplateResponse(
-            request,
-            "access_denied.html",
-            {
-                "request": request,
-                "message": "Эта страница доступна только тренерам."
-            }
-        )
-    return None
+        raise HTTPException(status_code=403, detail="Доступ только для тренеров")
 
-def check_admin(request: Request, current_user: Optional[dict]):
+def require_admin(current_user: Optional[dict]):
     if not current_user or current_user["type"] != "trainer" or not current_user.get("is_admin"):
-        return templates.TemplateResponse(
-            request,
-            "access_denied.html",
-            {
-                "request": request,
-                "message": "Эта страница доступна только администратору."
-            }
-        )
-    return None
+        raise HTTPException(status_code=403, detail="Доступ только для админов")
 
 # Для удобства: комбинированные проверки (например, тренер или админ)
 def require_trainer_or_admin(current_user: Optional[dict]):
@@ -207,6 +184,49 @@ def upgrade_database():
             print("✅ Добавлено поле password_hash в таблицу parents")
 
         conn.commit()
+
+
+# ---------- Вспомогательные функции для уведомлений ----------
+
+def send_notification_to_parent(parent_id: int, subject: str, message: str, db_cursor):
+    """
+    Отправляет уведомление родителю (пока только запись в таблицу notifications,
+    в будущем можно добавить email/SMS/VK).
+    """
+    db_cursor.execute(
+        """
+        INSERT INTO notifications (user_id, user_type, type, title, message, status, sent_at)
+        VALUES (?, 'parent', 'system', ?, ?, 'pending', NULL)
+        """,
+        (parent_id, subject, message)
+    )
+    db_cursor.connection.commit()
+    # Здесь можно добавить реальную отправку (email, VK и т.д.)
+    print(f"📢 Уведомление для родителя {parent_id}: {subject} - {message}")
+
+
+def auto_select_group(child_age: int, swimming_years: int, shift: str, db_cursor) -> Optional[dict]:
+    """
+    Автоматически подбирает подходящую группу по возрасту, году обучения и смене.
+    Возвращает словарь с данными группы или None.
+    """
+    db_cursor.execute(
+        """
+        SELECT id, name, min_age, max_age, swimming_year, max_students, shift,
+               (SELECT COUNT(*) FROM enrollments WHERE group_id = groups.id AND is_active = 1) as enrolled
+        FROM groups
+        WHERE is_active = 1
+          AND ? BETWEEN min_age AND max_age
+          AND swimming_year = ?
+          AND shift = ?
+          AND (SELECT COUNT(*) FROM enrollments WHERE group_id = groups.id AND is_active = 1) < max_students
+        ORDER BY min_age, swimming_year
+        LIMIT 1
+        """,
+        (child_age, swimming_years, shift)
+    )
+    group = db_cursor.fetchone()
+    return dict(group) if group else None
 
 # Жизненный цикл приложения
 @asynccontextmanager
@@ -1099,3 +1119,539 @@ async def delete_schedule_item(
     db_cursor.execute("DELETE FROM schedule WHERE id = ?", (schedule_id,))
     db_cursor.connection.commit()
     return RedirectResponse(url=f"/trainer/group/{group_id}/schedule/edit?success=deleted", status_code=303)
+
+
+
+# ======================== АДМИН ========================
+
+# ---------- Обработка заявок ----------
+
+@app.get("/admin/applications", response_class=HTMLResponse)
+async def admin_applications(
+    request: Request,
+    status_filter: Optional[str] = Query(None, description="Фильтр по статусу"),
+    age_min: Optional[int] = Query(None, description="Мин. возраст"),
+    age_max: Optional[int] = Query(None, description="Макс. возраст"),
+    swimming_year: Optional[int] = Query(None, description="Год обучения"),
+    shift_filter: Optional[str] = Query(None, description="Смена (day/evening)"),
+    current_user = Depends(get_current_user),
+    db_cursor = Depends(get_db)
+):
+    require_admin(current_user)
+
+    # Базовый запрос
+    query = "SELECT * FROM applications WHERE 1=1"
+    params = []
+
+    if status_filter:
+        query += " AND status = ?"
+        params.append(status_filter)
+    if age_min is not None:
+        query += " AND child_age >= ?"
+        params.append(age_min)
+    if age_max is not None:
+        query += " AND child_age <= ?"
+        params.append(age_max)
+    if swimming_year is not None:
+        query += " AND swimming_years = ?"
+        params.append(swimming_year)
+    if shift_filter:
+        query += " AND shift = ?"
+        params.append(shift_filter)
+
+    query += " ORDER BY created_at DESC"
+    db_cursor.execute(query, params)
+    applications = db_cursor.fetchall()
+
+    # Для отображения списка групп в форме одобрения
+    db_cursor.execute(
+        "SELECT id, name, min_age, max_age, swimming_year, shift, max_students FROM groups WHERE is_active = 1"
+    )
+    all_groups = db_cursor.fetchall()
+
+    return templates.TemplateResponse(
+        request,
+        "admin_applications.html",
+        {
+            "request": request,
+            "applications": applications,
+            "all_groups": all_groups,
+            "filters": {
+                "status": status_filter,
+                "age_min": age_min,
+                "age_max": age_max,
+                "swimming_year": swimming_year,
+                "shift": shift_filter
+            },
+            "current_user": current_user
+        }
+    )
+
+
+@app.get("/admin/application/{app_id}", response_class=HTMLResponse)
+async def admin_application_detail(
+    request: Request,
+    app_id: int,
+    current_user = Depends(get_current_user),
+    db_cursor = Depends(get_db)
+):
+    """Просмотр карточки заявки."""
+    require_admin(current_user)
+
+    db_cursor.execute("SELECT * FROM applications WHERE id = ?", (app_id,))
+    app = db_cursor.fetchone()
+    if not app:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+
+    # Список групп для возможного ручного выбора
+    db_cursor.execute(
+        "SELECT id, name, min_age, max_age, swimming_year, shift, max_students FROM groups WHERE is_active = 1"
+    )
+    groups = db_cursor.fetchall()
+
+    return templates.TemplateResponse(
+        request,
+        "admin_application_detail.html",
+        {
+            "request": request,
+            "application": dict(app),
+            "groups": groups,
+            "current_user": current_user
+        }
+    )
+
+
+@app.post("/admin/application/{app_id}/approve")
+async def approve_application(
+    request: Request,
+    app_id: int,
+    group_id: Annotated[Optional[int], Form()] = None,  # если None, то автоматический подбор
+    current_user = Depends(get_current_user),
+    db_cursor = Depends(get_db)
+):
+    require_admin(current_user)
+
+    # Получаем заявку
+    db_cursor.execute("SELECT * FROM applications WHERE id = ?", (app_id,))
+    app = db_cursor.fetchone()
+    if not app:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+
+    # Если не выбран group_id, пробуем автоматический подбор
+    if not group_id:
+        group = auto_select_group(app["child_age"], app["swimming_years"], app["shift"], db_cursor)
+        if not group:
+            # Не удалось подобрать группу автоматически
+            return templates.TemplateResponse(
+                request,
+                "admin_application_detail.html",
+                {
+                    "request": request,
+                    "application": dict(app),
+                    "groups": db_cursor.execute("SELECT id, name, min_age, max_age, swimming_year, shift, max_students FROM groups WHERE is_active = 1").fetchall(),
+                    "error": "Автоматический подбор группы не удался (нет свободных мест или не подходит по параметрам). Пожалуйста, выберите группу вручную или создайте новую группу.",
+                    "current_user": current_user
+                },
+                status_code=400
+            )
+        group_id = group["id"]
+
+    # Проверяем, что выбранная группа существует и активна
+    db_cursor.execute(
+        "SELECT id, max_students FROM groups WHERE id = ? AND is_active = 1",
+        (group_id,)
+    )
+    group = db_cursor.fetchone()
+    if not group:
+        raise HTTPException(status_code=400, detail="Выбранная группа не существует или неактивна")
+
+    # Проверка на переполнение группы
+    db_cursor.execute("SELECT COUNT(*) as cnt FROM enrollments WHERE group_id = ? AND is_active = 1", (group_id,))
+    enrolled = db_cursor.fetchone()["cnt"]
+    if enrolled >= group["max_students"]:
+        raise HTTPException(status_code=400, detail="В группе нет свободных мест")
+
+    # Начинаем создание родителя и ребёнка
+    # Проверяем, существует ли родитель с таким телефоном
+    db_cursor.execute("SELECT id FROM parents WHERE phone = ?", (app["parent_phone"],))
+    parent = db_cursor.fetchone()
+    if not parent:
+        # Создаём родителя, пароль = телефон (временное решение)
+        db_cursor.execute(
+            "INSERT INTO parents (full_name, phone, email, password_hash) VALUES (?, ?, ?, ?)",
+            (app["parent_full_name"], app["parent_phone"], app["parent_email"], app["parent_phone"])
+        )
+        parent_id = db_cursor.lastrowid
+    else:
+        parent_id = parent["id"]
+
+    # Создаём ребёнка
+    db_cursor.execute(
+        """
+        INSERT INTO children
+        (parent_id, full_name, age, class_number, school_name, swimming_years, shift, desired_lessons_per_week)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (parent_id, app["child_full_name"], app["child_age"], app["child_class"],
+         app["school_name"], app["swimming_years"], app["shift"], app["desired_lessons_per_week"])
+    )
+    child_id = db_cursor.lastrowid
+
+    # Зачисляем в группу
+    db_cursor.execute(
+        "INSERT INTO enrollments (child_id, group_id, enrolled_at) VALUES (?, ?, ?)",
+        (child_id, group_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    )
+
+    # Обновляем статус заявки
+    db_cursor.execute(
+        "UPDATE applications SET status = 'approved', processed_at = ?, processed_by = ? WHERE id = ?",
+        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), current_user["id"], app_id)
+    )
+    db_cursor.connection.commit()
+
+    # Отправляем уведомление родителю
+    group_info = db_cursor.execute("SELECT name FROM groups WHERE id = ?", (group_id,)).fetchone()
+    send_notification_to_parent(
+        parent_id,
+        "Заявка одобрена",
+        f"Ваш ребёнок {app['child_full_name']} зачислен в группу '{group_info['name']}'. Расписание занятий доступно в личном кабинете."
+    )
+
+    return RedirectResponse(url="/admin/applications?success=approved", status_code=303)
+
+
+@app.post("/admin/application/{app_id}/reject")
+async def reject_application(
+    request: Request,
+    app_id: int,
+    reason: Annotated[str, Form()],
+    current_user = Depends(get_current_user),
+    db_cursor = Depends(get_db)
+):
+    require_admin(current_user)
+
+    db_cursor.execute(
+        "UPDATE applications SET status = 'rejected', rejection_reason = ?, processed_at = ?, processed_by = ? WHERE id = ?",
+        (reason, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), current_user["id"], app_id)
+    )
+    db_cursor.connection.commit()
+
+    # Уведомление родителю (если родитель уже есть в базе, но заявка могла быть без авторизации)
+    # Просто отправим уведомление на телефон/email (заглушка)
+    db_cursor.execute("SELECT parent_phone, parent_email FROM applications WHERE id = ?", (app_id,))
+    app = db_cursor.fetchone()
+    if app:
+        # Здесь можно отправить SMS/email
+        print(f"📢 Отказ заявки {app_id}: {reason}")
+
+    return RedirectResponse(url="/admin/applications?success=rejected", status_code=303)
+
+
+# ---------- Управление тренерами ----------
+
+@app.get("/admin/trainers", response_class=HTMLResponse)
+async def admin_trainers(
+    request: Request,
+    current_user = Depends(get_current_user),
+    db_cursor = Depends(get_db)
+):
+    require_admin(current_user)
+    db_cursor.execute("SELECT id, full_name, phone, email, login, specialization, is_active FROM trainers")
+    trainers = db_cursor.fetchall()
+    return templates.TemplateResponse(
+        request,
+        "admin_trainers.html",
+        {
+            "request": request,
+            "trainers": trainers,
+            "current_user": current_user
+        }
+    )
+
+
+@app.get("/admin/trainer/create", response_class=HTMLResponse)
+async def create_trainer_form(
+    request: Request,
+    current_user = Depends(get_current_user)
+):
+    require_admin(current_user)
+    return templates.TemplateResponse(request, "admin_trainer_form.html", {"request": request, "current_user": current_user})
+
+
+@app.post("/admin/trainer/create")
+async def create_trainer(
+    request: Request,
+    full_name: Annotated[str, Form()],
+    phone: Annotated[str, Form()],
+    email: Annotated[str, Form()],
+    login: Annotated[str, Form()],
+    password: Annotated[str, Form()],
+    specialization: Annotated[str, Form()] = "",
+    is_active: Annotated[bool, Form()] = True,
+    current_user = Depends(get_current_user),
+    db_cursor = Depends(get_db)
+):
+    require_admin(current_user)
+
+    # Проверка уникальности логина
+    db_cursor.execute("SELECT id FROM trainers WHERE login = ?", (login,))
+    if db_cursor.fetchone():
+        raise HTTPException(status_code=400, detail="Тренер с таким логином уже существует")
+
+    db_cursor.execute(
+        """
+        INSERT INTO trainers (full_name, phone, email, login, password_hash, specialization, is_active)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (full_name, phone, email, login, password, specialization, is_active)
+    )
+    db_cursor.connection.commit()
+    return RedirectResponse(url="/admin/trainers?success=created", status_code=303)
+
+
+@app.get("/admin/trainer/{trainer_id}/edit", response_class=HTMLResponse)
+async def edit_trainer_form(
+    request: Request,
+    trainer_id: int,
+    current_user = Depends(get_current_user),
+    db_cursor = Depends(get_db)
+):
+    require_admin(current_user)
+    db_cursor.execute("SELECT * FROM trainers WHERE id = ?", (trainer_id,))
+    trainer = db_cursor.fetchone()
+    if not trainer:
+        raise HTTPException(status_code=404, detail="Тренер не найден")
+    return templates.TemplateResponse(
+        request,
+        "admin_trainer_edit.html",
+        {"request": request, "trainer": dict(trainer), "current_user": current_user}
+    )
+
+
+@app.post("/admin/trainer/{trainer_id}/edit")
+async def update_trainer(
+    request: Request,
+    trainer_id: int,
+    full_name: Annotated[str, Form()],
+    phone: Annotated[str, Form()],
+    email: Annotated[str, Form()],
+    login: Annotated[str, Form()],
+    specialization: Annotated[str, Form()] = "",
+    is_active: Annotated[bool, Form()] = True,
+    current_user = Depends(get_current_user),
+    db_cursor = Depends(get_db)
+):
+    require_admin(current_user)
+
+    # Если меняется логин, проверяем уникальность
+    db_cursor.execute("SELECT id FROM trainers WHERE login = ? AND id != ?", (login, trainer_id))
+    if db_cursor.fetchone():
+        raise HTTPException(status_code=400, detail="Логин уже используется другим тренером")
+
+    db_cursor.execute(
+        """
+        UPDATE trainers
+        SET full_name = ?, phone = ?, email = ?, login = ?, specialization = ?, is_active = ?
+        WHERE id = ?
+        """,
+        (full_name, phone, email, login, specialization, is_active, trainer_id)
+    )
+    db_cursor.connection.commit()
+    return RedirectResponse(url="/admin/trainers?success=updated", status_code=303)
+
+
+@app.post("/admin/trainer/{trainer_id}/delete")
+async def delete_trainer(
+    request: Request,
+    trainer_id: int,
+    current_user = Depends(get_current_user),
+    db_cursor = Depends(get_db)
+):
+    if trainer_id == current_user["id"]:
+        raise HTTPException(status_code=400, detail="Нельзя удалить самого себя")
+
+    # При удалении тренера снимаем привязку групп (trainer_id -> NULL)
+    db_cursor.execute("UPDATE groups SET trainer_id = NULL WHERE trainer_id = ?", (trainer_id,))
+    db_cursor.execute("DELETE FROM trainers WHERE id = ?", (trainer_id,))
+    db_cursor.connection.commit()
+    return RedirectResponse(url="/admin/trainers?success=deleted", status_code=303)
+
+
+# ---------- Управление группами ----------
+
+@app.get("/admin/groups", response_class=HTMLResponse)
+async def admin_groups(
+    request: Request,
+    current_user = Depends(get_current_user),
+    db_cursor = Depends(get_db)
+):
+    require_admin(current_user)
+    db_cursor.execute(
+        """
+        SELECT g.*, t.full_name as trainer_name,
+               (SELECT COUNT(*) FROM enrollments WHERE group_id = g.id AND is_active = 1) as enrolled
+        FROM groups g
+        LEFT JOIN trainers t ON g.trainer_id = t.id
+        ORDER BY g.name
+        """
+    )
+    groups = db_cursor.fetchall()
+    # Список тренеров для выпадающего списка
+    db_cursor.execute("SELECT id, full_name FROM trainers WHERE is_active = 1")
+    trainers = db_cursor.fetchall()
+    return templates.TemplateResponse(
+        request,
+        "admin_groups.html",
+        {
+            "request": request,
+            "groups": groups,
+            "trainers": trainers,
+            "current_user": current_user
+        }
+    )
+
+
+@app.get("/admin/group/create", response_class=HTMLResponse)
+async def create_group_form(
+    request: Request,
+    current_user = Depends(get_current_user),
+    db_cursor = Depends(get_db)
+):
+    require_admin(current_user)
+    db_cursor.execute("SELECT id, full_name FROM trainers WHERE is_active = 1")
+    trainers = db_cursor.fetchall()
+    return templates.TemplateResponse(
+        request,
+        "admin_group_form.html",
+        {"request": request, "trainers": trainers, "current_user": current_user}
+    )
+
+
+@app.post("/admin/group/create")
+async def create_group(
+    request: Request,
+    name: Annotated[str, Form()],
+    trainer_id: Annotated[Optional[int], Form()] = None,
+    min_age: Annotated[int, Form()] = 3,
+    max_age: Annotated[int, Form()] = 17,
+    swimming_year: Annotated[int, Form()] = 1,
+    max_students: Annotated[int, Form()] = 15,
+    shift: Annotated[str, Form()] = "day",
+    current_user = Depends(get_current_user),
+    db_cursor = Depends(get_db)
+):
+    require_admin(current_user)
+    db_cursor.execute(
+        """
+        INSERT INTO groups (name, trainer_id, min_age, max_age, swimming_year, max_students, shift)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (name, trainer_id, min_age, max_age, swimming_year, max_students, shift)
+    )
+    db_cursor.connection.commit()
+    return RedirectResponse(url="/admin/groups?success=created", status_code=303)
+
+
+@app.get("/admin/group/{group_id}/edit", response_class=HTMLResponse)
+async def edit_group_form(
+    request: Request,
+    group_id: int,
+    current_user = Depends(get_current_user),
+    db_cursor = Depends(get_db)
+):
+    require_admin(current_user)
+    db_cursor.execute("SELECT * FROM groups WHERE id = ?", (group_id,))
+    group = db_cursor.fetchone()
+    if not group:
+        raise HTTPException(status_code=404, detail="Группа не найдена")
+    db_cursor.execute("SELECT id, full_name FROM trainers WHERE is_active = 1")
+    trainers = db_cursor.fetchall()
+    return templates.TemplateResponse(
+        request,
+        "admin_group_edit.html",
+        {"request": request, "group": dict(group), "trainers": trainers, "current_user": current_user}
+    )
+
+
+@app.post("/admin/group/{group_id}/edit")
+async def update_group(
+    request: Request,
+    group_id: int,
+    name: Annotated[str, Form()],
+    trainer_id: Annotated[Optional[int], Form()] = None,
+    min_age: Annotated[int, Form()] = 3,
+    max_age: Annotated[int, Form()] = 17,
+    swimming_year: Annotated[int, Form()] = 1,
+    max_students: Annotated[int, Form()] = 15,
+    shift: Annotated[str, Form()] = "day",
+    is_active: Annotated[bool, Form()] = True,
+    current_user = Depends(get_current_user),
+    db_cursor = Depends(get_db)
+):
+    require_admin(current_user)
+    db_cursor.execute(
+        """
+        UPDATE groups
+        SET name = ?, trainer_id = ?, min_age = ?, max_age = ?, swimming_year = ?, max_students = ?, shift = ?, is_active = ?
+        WHERE id = ?
+        """,
+        (name, trainer_id, min_age, max_age, swimming_year, max_students, shift, is_active, group_id)
+    )
+    db_cursor.connection.commit()
+    return RedirectResponse(url="/admin/groups?success=updated", status_code=303)
+
+
+@app.post("/admin/group/{group_id}/delete")
+async def delete_group(
+    request: Request,
+    group_id: int,
+    transfer_group_id: Annotated[Optional[int], Form()] = None,
+    current_user = Depends(get_current_user),
+    db_cursor = Depends(get_db)
+):
+    require_admin(current_user)
+
+    # Проверяем, есть ли ученики в группе
+    db_cursor.execute("SELECT COUNT(*) as cnt FROM enrollments WHERE group_id = ? AND is_active = 1", (group_id,))
+    enrolled = db_cursor.fetchone()["cnt"]
+    if enrolled > 0 and not transfer_group_id:
+        # Нужно предложить перевести учеников
+        raise HTTPException(status_code=400, detail="В группе есть ученики. Необходимо указать группу для перевода или отчислить их")
+
+    if transfer_group_id:
+        # Переводим всех активных учеников в другую группу
+        db_cursor.execute(
+            "UPDATE enrollments SET group_id = ? WHERE group_id = ? AND is_active = 1",
+            (transfer_group_id, group_id)
+        )
+    else:
+        # Отчисляем учеников (устанавливаем is_active = 0)
+        db_cursor.execute("UPDATE enrollments SET is_active = 0 WHERE group_id = ?", (group_id,))
+
+    # Удаляем группу
+    db_cursor.execute("DELETE FROM groups WHERE id = ?", (group_id,))
+    db_cursor.connection.commit()
+    return RedirectResponse(url="/admin/groups?success=deleted", status_code=303)
+
+
+
+# ======================== ДАШБОРД (ПЕРЕНАПРАВЛЯЕТ ПОЛЬЗОВАТЕЛЯ В ЗАВИСИМОСТИ ОТ РОЛИ) ========================
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_redirect(
+    request: Request,
+    current_user = Depends(get_current_user)
+):
+    """Редирект на соответствующий дашборд в зависимости от роли."""
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+    if current_user["type"] == "parent":
+        return RedirectResponse(url="/parent/profile", status_code=303)
+    elif current_user["type"] == "trainer":
+        return RedirectResponse(url="/trainer/dashboard", status_code=303)
+    elif current_user["type"] == "admin":
+        # Для админа показываем страницу со ссылками на все разделы
+        return templates.TemplateResponse(request, "admin_dashboard.html", {"request": request, "current_user": current_user})
+    else:
+        return RedirectResponse(url="/login", status_code=303)
