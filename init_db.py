@@ -11,12 +11,9 @@ created_credentials = {
 }
 
 def hash_password(password: str) -> str:
-    #Хеширует пароль с помощью bcrypt.
-    #Временная функция!!!
-    #ВРЕМЕННО: для тестов просто возвращаем пароль с префиксом!!!
-    #Потом здесь должен быть bcrypt.hashpw(password, bcrypt.gensalt())!!!
-    return f"hash_of_{password}"
-
+    # ВРЕМЕННО: для тестов просто возвращаем пароль (без хеширования)
+    # Потом здесь должен быть bcrypt.hashpw(password, bcrypt.gensalt())
+    return password  # Просто возвращаем пароль как есть
 def print_credentials():
     #Выводит все созданные учётные данные для тестирования
     print("\n" + "=" * 60)
@@ -347,6 +344,7 @@ def seed_test_data():
 
     global created_credentials # Очищаем список учётных данных перед новым заполнением
     created_credentials = {
+        "admins": [],  # Добавляем admins
         "trainers": [],
         "parents": []
     }
@@ -368,13 +366,13 @@ def seed_test_data():
                 print("❌ Tables still don't exist, cannot seed data")
                 print("   Please run 'create_tables()' first or use 'reset_database()'")
                 return
-            #Если другая ошибка - пробрасываем её дальше
+            # Если другая ошибка - пробрасываем её дальше
             raise e
 
         print("🌱 Seeding test data...")
 
-        #Хеш пароля для тестовых пользователей (пароль: "password123")
-        #В реальном проекте используйте bcrypt!
+        # Хеш пароля для тестовых пользователей (пароль: "password123")
+        # В реальном проекте используйте bcrypt!
         test_password_hash = "test_hash_replace_with_bcrypt"
 
         # 1. Создаём тренеров (trainers)
@@ -390,29 +388,31 @@ def seed_test_data():
         # Сохраняем оригинальные пароли и хешируем их
         trainers_list = []
         for trainer in trainers_data:
+            # trainer - это кортеж, индексы:
+            # 0: full_name, 1: phone, 2: email, 3: login, 4: password, 5: specialization
             # Сохраняем учётные данные для вывода
             created_credentials["trainers"].append({
-                "full_name": trainer["full_name"],
-                "login": trainer["login"],
-                "password": trainer["password"]  # Сохраняем оригинальный пароль!
+                "full_name": trainer[0],  # ИСПРАВЛЕНО: используем индекс вместо строкового ключа
+                "login": trainer[3],       # ИСПРАВЛЕНО: логин на индексе 3
+                "password": trainer[4]     # ИСПРАВЛЕНО: пароль на индексе 4
             })
 
             # Хешируем пароль для БД
-            password_hash = hash_password(trainer["password"])
+            password_hash = hash_password(trainer[4])  # ИСПРАВЛЕНО: пароль на индексе 4
 
             trainers_list.append((
-                trainer["full_name"],
-                trainer["phone"],
-                trainer["email"],
-                trainer["login"],
+                trainer[0],  # full_name
+                trainer[1],  # phone
+                trainer[2],  # email
+                trainer[3],  # login
                 password_hash,
-                trainer["specialization"]
+                trainer[5]   # specialization
             ))
 
         cursor.executemany("""
             INSERT INTO trainers (full_name, phone, email, login, password_hash, specialization)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, trainers_data)
+        """, trainers_list)  # ИСПРАВЛЕНО: используем trainers_list вместо trainers_data
 
         # 2. Создаём группы (groups)
         groups_data = [ # (name, trainer_id, min_age, max_age, swimming_year, max_students, shift)
@@ -436,12 +436,11 @@ def seed_test_data():
         ]
 
         for parent in parents_data:
+            # parent - кортеж: 0: full_name, 1: phone, 2: email, 3: vk_id
             created_credentials["parents"].append({
-                "full_name": parent["full_name"],
-                "phone": parent["phone"]
+                "full_name": parent[0],  # ИСПРАВЛЕНО: индекс 0
+                "phone": parent[1]       # ИСПРАВЛЕНО: индекс 1
             })
-
-        parents_list = [(p["full_name"], p["phone"], p["email"], p["vk_id"]) for p in parents_data]
 
         cursor.executemany("""
             INSERT INTO parents (full_name, phone, email, vk_id)
@@ -492,7 +491,7 @@ def seed_test_data():
         cursor.executemany("""
             INSERT INTO schedule (group_id, weekday, start_time, end_time, location, is_recurring, single_date)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, schedule_data)  #weekday: 0=пн, 1=вт, 2=ср, 3=чт, 4=пт, 5=сб, 6=вс
+        """, schedule_data)  # weekday: 0=пн, 1=вт, 2=ср, 3=чт, 4=пт, 5=сб, 6=вс
 
         # 7. Добавляем посещаемость за последнюю неделю (attendance)
         attendance_data = []  # Создаём отметки посещаемости за последнюю неделю
@@ -508,7 +507,7 @@ def seed_test_data():
                 d = today - timedelta(days=days_ago)  # Вычисляем дату
                 # status = "present" если не 5 дней назад, иначе "absent"
                 status = "present" if days_ago != 5 else "absent"  # для примера
-                attendance_data.append((enrollment_id, d, status))
+                attendance_data.append((enrollment_id, d.isoformat(), status))  # ИСПРАВЛЕНО: d.isoformat()
         # Вставляем все отметки посещаемости
         cursor.executemany("""
             INSERT INTO attendance (enrollment_id, date, status)
@@ -531,42 +530,28 @@ def seed_test_data():
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, applications_data)
 
+        # 9. Создаём администратора
         admins_list = [
-            {
-                "full_name": "Администратор",
-                "login": "admin",
-                "password": "admin123",
-                "email": "admin@swim.ru",
-                "phone": "+79001112233"
-            }
+            ("Администратор", "admin", "admin123", "admin@swim.ru", "+79001112233")
         ]
 
-        # 9. Сохраняем учётные данные администратора
-        admins_data = []
+        # Сохраняем учётные данные администратора
         for admin in admins_list:
-            # Сохраняем для вывода
+            # admin - кортеж: 0: full_name, 1: login, 2: password, 3: email, 4: phone
             created_credentials["admins"].append({
-                "full_name": admin["full_name"],
-                "login": admin["login"],
-                "password": admin["password"]
+                "full_name": admin[0],
+                "login": admin[1],
+                "password": admin[2]
             })
 
             # Хешируем пароль для БД
-            password_hash = hash_password(admin["password"])
+            password_hash = hash_password(admin[2])
 
-            admins_data.append((
-                admin["full_name"],
-                admin["login"],
-                password_hash,
-                admin["email"],
-                admin["phone"]
-            ))
-
-        # Вставляем администратора
-        cursor.executemany("""
-            INSERT INTO admins (full_name, login, password_hash, email, phone)
-            VALUES (?, ?, ?, ?, ?)
-        """, admins_data)
+            # Вставляем администратора
+            cursor.execute("""
+                INSERT INTO admins (full_name, login, password_hash, email, phone)
+                VALUES (?, ?, ?, ?, ?)
+            """, (admin[0], admin[1], password_hash, admin[3], admin[4]))
 
         # 10: Выводим количество записей в каждой таблице
         print("✅ Test data seeded successfully")
