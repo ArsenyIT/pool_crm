@@ -4,6 +4,46 @@ import os
 from database import db_instance, get_db_cursor, DATABASE_PATH
 from datetime import datetime, time, date, timedelta
 
+# Словарь для хранения созданных паролей (для отладки и тестирования)
+created_credentials = {
+    "trainers": [],  # Список тренеров с логинами и паролями
+    "parents": []  # Список родителей с телефонами
+}
+
+def hash_password(password: str) -> str:
+    #Хеширует пароль с помощью bcrypt.
+    #Временная функция!!!
+    #ВРЕМЕННО: для тестов просто возвращаем пароль с префиксом!!!
+    #Потом здесь должен быть bcrypt.hashpw(password, bcrypt.gensalt())!!!
+    return f"hash_of_{password}"
+
+def print_credentials():
+    #Выводит все созданные учётные данные для тестирования
+    print("\n" + "=" * 60)
+    print("🔐 TEST CREDENTIALS (сохраните для тестирования)")
+    print("=" * 60)
+
+    # 👑 АДМИНИСТРАТОР (один)
+    if created_credentials["admins"]:
+        print("\n👑 АДМИНИСТРАТОР (полный доступ ко всем данным):")
+        for a in created_credentials["admins"]:
+            print(f"   • {a['full_name']}: {a['login']} / {a['password']}")
+
+    if created_credentials["trainers"]:
+        print("\n👨‍🏫 ТРЕНЕРЫ (логин / пароль):")
+        for t in created_credentials["trainers"]:
+            print(f"   • {t['full_name']}: {t['login']} / {t['password']}")
+
+    if created_credentials["parents"]:
+        print("\n👨‍👩‍👧 РОДИТЕЛИ (телефон для входа):")
+        for p in created_credentials["parents"]:
+            print(f"   • {p['full_name']}: {p['phone']}")
+
+    print("\n" + "=" * 60)
+    print("💡 Для входа родителям нужен ТОЛЬКО телефон (пароль не требуется)")
+    print("💡 Тренерам нужны логин И пароль")
+    print("=" * 60 + "\n")
+
 def table_exists(cursor, table_name):
     #Проверяет, существует ли таблица в базе данных SQLite
     cursor.execute(#cursor - курсор SQLite для выполнения запросов
@@ -203,7 +243,28 @@ def create_tables():
                 #processed_at: Дата и время обработки заявки
                 #processed_by: Кто обработал заявку (ID администратора/тренера)
 
-        # 9. Таблица логов администратора (admin_logs)
+        # 9. Таблица администраторов (admins)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS admins (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                full_name VARCHAR(255) NOT NULL,
+                login VARCHAR(100) NOT NULL UNIQUE,
+                password_hash VARCHAR(255) NOT NULL,
+                email VARCHAR(255),
+                phone VARCHAR(20),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)    #id: Уникальный идентификатор администратора
+                #full_name: Полное имя администратора
+                #login: Уникальное имя пользователя для входа в систему
+                #password_hash: Хеш пароля
+                #email: Электронная почта администратора
+                #phone: Контактный телефон администратора
+                #created_at: Дата и время создания записи
+                #updated_at: Дата и время последнего обновления записи
+
+        # 10. Таблица логов администратора (admin_logs)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS admin_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,7 +274,7 @@ def create_tables():
                 entity_id INTEGER,
                 details TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (admin_id) REFERENCES trainers(id)
+                FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE CASCADE
             )
         """)    #id: Уникальный идентификатор записи лога
                 #admin_id: ID администратора, который совершил действие
@@ -223,7 +284,7 @@ def create_tables():
                 #details: Детальное описание изменений (JSON или текст)
                 #created_at: Дата и время совершения действия
 
-        # 10. Таблица уведомлений (notifications)
+        # 11. Таблица уведомлений (notifications)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS notifications (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -283,8 +344,14 @@ def ensure_tables_exist():
 
 def seed_test_data():
     # Заполнение тестовыми данными для разработки
-    # Проверяем, существуют ли таблицы
-    ensure_tables_exist()
+
+    global created_credentials # Очищаем список учётных данных перед новым заполнением
+    created_credentials = {
+        "trainers": [],
+        "parents": []
+    }
+
+    ensure_tables_exist() # Проверяем, существуют ли таблицы
 
     with get_db_cursor() as cursor:
         # Проверяем, есть ли уже данные
@@ -311,14 +378,36 @@ def seed_test_data():
         test_password_hash = "test_hash_replace_with_bcrypt"
 
         # 1. Создаём тренеров (trainers)
-        trainers_data = [ # (full_name, phone, email, login, password_hash, specialization)
-            ("Анна Иванова", "+79001234567", "anna@swim.ru", "anna.trainer", test_password_hash,
+        trainers_data = [ # (full_name, phone, email, login, password, specialization)
+            ("Анна Иванова", "+79001234567", "anna@swim.ru", "anna.trainer", "anna123",
              "Детское плавание, начальная подготовка"),
-            ("Михаил Петров", "+79007654321", "mikhail@swim.ru", "mikhail.trainer", test_password_hash,
+            ("Михаил Петров", "+79007654321", "mikhail@swim.ru", "mikhail.trainer", "mikhail123",
              "Спортивное плавание, старшие группы"),
-            ("Елена Смирнова", "+79009998877", "elena@swim.ru", "elena.trainer", test_password_hash,
+            ("Елена Смирнова", "+79009998877", "elena@swim.ru", "elena.trainer", "elena123",
              "Оздоровительное плавание, малыши"),
         ]
+
+        # Сохраняем оригинальные пароли и хешируем их
+        trainers_list = []
+        for trainer in trainers_data:
+            # Сохраняем учётные данные для вывода
+            created_credentials["trainers"].append({
+                "full_name": trainer["full_name"],
+                "login": trainer["login"],
+                "password": trainer["password"]  # Сохраняем оригинальный пароль!
+            })
+
+            # Хешируем пароль для БД
+            password_hash = hash_password(trainer["password"])
+
+            trainers_list.append((
+                trainer["full_name"],
+                trainer["phone"],
+                trainer["email"],
+                trainer["login"],
+                password_hash,
+                trainer["specialization"]
+            ))
 
         cursor.executemany("""
             INSERT INTO trainers (full_name, phone, email, login, password_hash, specialization)
@@ -345,6 +434,14 @@ def seed_test_data():
             ("Ольга Сидорова", "+79234567890", "olga@example.com", None),
             ("Дмитрий Козлов", "+79345678901", "dmitry@example.com", None),
         ]
+
+        for parent in parents_data:
+            created_credentials["parents"].append({
+                "full_name": parent["full_name"],
+                "phone": parent["phone"]
+            })
+
+        parents_list = [(p["full_name"], p["phone"], p["email"], p["vk_id"]) for p in parents_data]
 
         cursor.executemany("""
             INSERT INTO parents (full_name, phone, email, vk_id)
@@ -433,7 +530,45 @@ def seed_test_data():
             INSERT INTO applications (parent_full_name, parent_phone, parent_email, child_full_name, child_age, child_class, school_name, swimming_years, shift, desired_lessons_per_week, status, rejection_reason, processed_at, processed_by)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, applications_data)
-        # 9: Выводим количество записей в каждой таблице
+
+        admins_list = [
+            {
+                "full_name": "Администратор",
+                "login": "admin",
+                "password": "admin123",
+                "email": "admin@swim.ru",
+                "phone": "+79001112233"
+            }
+        ]
+
+        # 9. Сохраняем учётные данные администратора
+        admins_data = []
+        for admin in admins_list:
+            # Сохраняем для вывода
+            created_credentials["admins"].append({
+                "full_name": admin["full_name"],
+                "login": admin["login"],
+                "password": admin["password"]
+            })
+
+            # Хешируем пароль для БД
+            password_hash = hash_password(admin["password"])
+
+            admins_data.append((
+                admin["full_name"],
+                admin["login"],
+                password_hash,
+                admin["email"],
+                admin["phone"]
+            ))
+
+        # Вставляем администратора
+        cursor.executemany("""
+            INSERT INTO admins (full_name, login, password_hash, email, phone)
+            VALUES (?, ?, ?, ?, ?)
+        """, admins_data)
+
+        # 10: Выводим количество записей в каждой таблице
         print("✅ Test data seeded successfully")
         print(f"📊 Statistics:")
         print(f"   - Trainers: {cursor.execute('SELECT COUNT(*) FROM trainers').fetchone()[0]}")
@@ -441,6 +576,9 @@ def seed_test_data():
         print(f"   - Parents: {cursor.execute('SELECT COUNT(*) FROM parents').fetchone()[0]}")
         print(f"   - Children: {cursor.execute('SELECT COUNT(*) FROM children').fetchone()[0]}")
         print(f"   - Enrollments: {cursor.execute('SELECT COUNT(*) FROM enrollments').fetchone()[0]}")
+
+        # Выводим список созданных учётных данных
+        print_credentials()
 
 def drop_all_tables():
     # Удаляет ВСЕ таблицы из базы данных (без пересоздания)
