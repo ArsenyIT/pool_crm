@@ -1,0 +1,127 @@
+<!-- templates/admin_application_detail.html -->
+{% extends "base.html" %}
+
+{% block title %}Заявка #{{ application.id }} - Swim CRM{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1><i class="fas fa-file-alt"></i> Заявка #{{ application.id }}</h1>
+        <a href="/admin/applications" class="btn btn-outline">
+            <i class="fas fa-arrow-left"></i> Назад к списку
+        </a>
+    </div>
+
+    {% if error %}
+        <div class="alert alert-error">
+            <i class="fas fa-exclamation-triangle"></i> {{ error }}
+        </div>
+    {% endif %}
+
+    <div class="row">
+        <!-- Информация о заявке -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h3><i class="fas fa-user"></i> Информация о родителе</h3>
+                </div>
+                <div class="card-body">
+                    <div class="info-item"><label>ФИО:</label><span>{{ application.parent_full_name }}</span></div>
+                    <div class="info-item"><label>Телефон:</label><span>{{ application.parent_phone }}</span></div>
+                    {% if application.parent_email %}
+                        <div class="info-item"><label>Email:</label><span>{{ application.parent_email }}</span></div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h3><i class="fas fa-child"></i> Информация о ребёнке</h3>
+                </div>
+                <div class="card-body">
+                    <div class="info-item"><label>ФИО:</label><span>{{ application.child_full_name }}</span></div>
+                    <div class="info-item"><label>Возраст:</label><span>{{ application.child_age }} лет</span></div>
+                    <div class="info-item"><label>Класс:</label><span>{% if application.child_class and application.child_class > 0 %}{{ application.child_class }}{% else %}Детский сад{% endif %}</span></div>
+                    <div class="info-item"><label>Школа:</label><span>{{ application.school_name }}</span></div>
+                    <div class="info-item"><label>Стаж плавания:</label><span>
+                        {% if application.swimming_years == 1 %}Менее года
+                        {% elif application.swimming_years == 2 %}1-2 года
+                        {% elif application.swimming_years == 3 %}2-3 года
+                        {% else %}Более 3 лет{% endif %}
+                    </span></div>
+                    <div class="info-item"><label>Смена:</label><span>{% if application.shift == 'day' %}Дневная{% else %}Вечерняя{% endif %}</span></div>
+                    <div class="info-item"><label>Занятий в неделю:</label><span>{{ application.desired_lessons_per_week }}</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Действия с заявкой -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h3><i class="fas fa-cog"></i> Обработка заявки</h3>
+        </div>
+        <div class="card-body">
+            {% if application.status in ['new', 'processing'] %}
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="approve-section">
+                            <h4><i class="fas fa-check-circle text-success"></i> Одобрить заявку</h4>
+                            <form method="post" action="/admin/application/{{ application.id }}/approve">
+                                <div class="form-group">
+                                    <label for="group_id">Выберите группу:</label>
+                                    <select id="group_id" name="group_id" class="form-select">
+                                        <option value="">Автоматический подбор</option>
+                                        {% for group in groups %}
+                                            <option value="{{ group.id }}"
+                                                {% if application.child_age >= group.min_age and application.child_age <= group.max_age and application.shift == group.shift %}
+                                                    selected
+                                                {% endif %}>
+                                                {{ group.name }} ({{ group.min_age }}-{{ group.max_age }} лет,
+                                                {% if group.shift == 'day' %}дневная{% else %}вечерняя{% endif %})
+                                            </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                <button type="submit" class="btn btn-success">
+                                    <i class="fas fa-check"></i> Одобрить заявку
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="reject-section">
+                            <h4><i class="fas fa-times-circle text-danger"></i> Отклонить заявку</h4>
+                            <form method="post" action="/admin/application/{{ application.id }}/reject">
+                                <div class="form-group">
+                                    <label for="reason">Причина отказа:</label>
+                                    <textarea id="reason" name="reason" class="form-control" rows="3"
+                                              placeholder="Укажите причину отклонения заявки..."></textarea>
+                                </div>
+                                <button type="submit" class="btn btn-danger">
+                                    <i class="fas fa-times"></i> Отклонить заявку
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            {% else %}
+                <div class="alert alert-info">
+                    <i class="fas fa-info-circle"></i>
+                    Заявка уже обработана.
+                    {% if application.status == 'approved' %}
+                        Статус: <strong>Одобрена</strong>
+                    {% elif application.status == 'rejected' %}
+                        Статус: <strong>Отклонена</strong>
+                        {% if application.rejection_reason %}
+                            <br>Причина: {{ application.rejection_reason }}
+                        {% endif %}
+                    {% endif %}
+                </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

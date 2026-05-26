@@ -1,0 +1,192 @@
+<!-- templates/admin_dashboard.html -->
+{% extends "base.html" %}
+
+{% block title %}Панель администратора - Swim CRM{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1><i class="fas fa-crown"></i> Панель администратора</h1>
+        <p>Добро пожаловать, {{ current_user.name }}!</p>
+    </div>
+
+    <!-- Статистика -->
+    <div class="row g-4 mb-5">
+        <div class="col-md-3">
+            <div class="stat-card text-center">
+                <div class="stat-number" id="totalApplications">0</div>
+                <div class="stat-label">Новых заявок</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="stat-card text-center">
+                <div class="stat-number" id="totalGroups">0</div>
+                <div class="stat-label">Активных групп</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="stat-card text-center">
+                <div class="stat-number" id="totalStudents">0</div>
+                <div class="stat-label">Учеников</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="stat-card text-center">
+                <div class="stat-number" id="totalTrainers">0</div>
+                <div class="stat-label">Тренеров</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Быстрые действия -->
+    <div class="row g-4 mb-5">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header">
+                    <h3><i class="fas fa-bolt"></i> Быстрые действия</h3>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-3">
+                            <a href="/admin/applications" class="btn btn-primary w-100 py-3">
+                                <i class="fas fa-clipboard-list fa-2x d-block mb-2"></i>
+                                Заявки
+                            </a>
+                        </div>
+                        <div class="col-md-3">
+                            <a href="/admin/trainers" class="btn btn-success w-100 py-3">
+                                <i class="fas fa-chalkboard-user fa-2x d-block mb-2"></i>
+                                Тренеры
+                            </a>
+                        </div>
+                        <div class="col-md-3">
+                            <a href="/admin/groups" class="btn btn-info w-100 py-3">
+                                <i class="fas fa-users fa-2x d-block mb-2"></i>
+                                Группы
+                            </a>
+                        </div>
+                        <div class="col-md-3">
+                            <a href="/trainer/dashboard" class="btn btn-secondary w-100 py-3">
+                                <i class="fas fa-chart-line fa-2x d-block mb-2"></i>
+                                Все группы
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Последние заявки -->
+    <div class="card">
+        <div class="card-header">
+            <h3><i class="fas fa-clock"></i> Последние заявки</h3>
+        </div>
+        <div class="card-body">
+            <div class="table-wrapper">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Дата</th>
+                            <th>Родитель</th>
+                            <th>Ребёнок</th>
+                            <th>Возраст</th>
+                            <th>Статус</th>
+                            <th>Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recentApplications">
+                        <tr>
+                            <td colspan="6" class="text-center">Загрузка...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Загрузка статистики
+    async function loadStats() {
+        try {
+            // Загружаем статистику через API (нужно добавить эндпоинты или использовать существующие)
+            const response = await fetch('/admin/api/stats');
+            if (response.ok) {
+                const data = await response.json();
+                document.getElementById('totalApplications').textContent = data.new_applications || 0;
+                document.getElementById('totalGroups').textContent = data.active_groups || 0;
+                document.getElementById('totalStudents').textContent = data.total_students || 0;
+                document.getElementById('totalTrainers').textContent = data.active_trainers || 0;
+            }
+        } catch(e) {
+            console.error('Ошибка загрузки статистики:', e);
+        }
+    }
+
+    // Загрузка последних заявок
+    async function loadRecentApplications() {
+        try {
+            const response = await fetch('/admin/api/recent_applications');
+            if (response.ok) {
+                const data = await response.json();
+                const tbody = document.getElementById('recentApplications');
+                if (data.applications && data.applications.length > 0) {
+                    tbody.innerHTML = data.applications.map(app => `
+                        <tr>
+                            <td>${app.created_at.slice(0, 10)}</td>
+                            <td>${escapeHtml(app.parent_full_name)}</td>
+                            <td>${escapeHtml(app.child_full_name)}</td>
+                            <td>${app.child_age} лет</td>
+                            <td>
+                                <span class="badge ${getStatusBadgeClass(app.status)}">
+                                    ${getStatusText(app.status)}
+                                </span>
+                            </td>
+                            <td>
+                                <a href="/admin/application/${app.id}" class="btn btn-sm btn-primary">
+                                    <i class="fas fa-eye"></i> Просмотр
+                                </a>
+                            </td>
+                        </tr>
+                    `).join('');
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="6" class="text-center">Нет заявок</td></tr>';
+                }
+            }
+        } catch(e) {
+            console.error('Ошибка загрузки заявок:', e);
+        }
+    }
+
+    function getStatusBadgeClass(status) {
+        const classes = {
+            'new': 'bg-primary',
+            'processing': 'bg-warning',
+            'approved': 'bg-success',
+            'rejected': 'bg-danger'
+        };
+        return classes[status] || 'bg-secondary';
+    }
+
+    function getStatusText(status) {
+        const texts = {
+            'new': 'Новая',
+            'processing': 'В обработке',
+            'approved': 'Одобрена',
+            'rejected': 'Отклонена'
+        };
+        return texts[status] || status;
+    }
+
+    function escapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    loadStats();
+    loadRecentApplications();
+</script>
+{% endblock %}

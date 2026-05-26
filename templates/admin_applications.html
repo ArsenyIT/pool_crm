@@ -1,0 +1,165 @@
+<!-- templates/admin_applications.html -->
+{% extends "base.html" %}
+
+{% block title %}Управление заявками - Swim CRM{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1><i class="fas fa-clipboard-list"></i> Управление заявками</h1>
+        <a href="/dashboard" class="btn btn-outline">
+            <i class="fas fa-arrow-left"></i> Назад
+        </a>
+    </div>
+
+    {% if request.query_params.get('success') == 'approved' %}
+        <div class="alert alert-success">
+            <i class="fas fa-check-circle"></i> Заявка успешно одобрена!
+        </div>
+    {% endif %}
+    {% if request.query_params.get('success') == 'rejected' %}
+        <div class="alert alert-info">
+            <i class="fas fa-info-circle"></i> Заявка отклонена.
+        </div>
+    {% endif %}
+
+    <!-- Фильтры -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h3><i class="fas fa-filter"></i> Фильтры</h3>
+        </div>
+        <div class="card-body">
+            <form method="get" action="/admin/applications" class="filter-form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="status">Статус</label>
+                        <select id="status" name="status" class="form-select">
+                            <option value="">Все</option>
+                            <option value="new" {% if filters.status == 'new' %}selected{% endif %}>Новые</option>
+                            <option value="processing" {% if filters.status == 'processing' %}selected{% endif %}>В обработке</option>
+                            <option value="approved" {% if filters.status == 'approved' %}selected{% endif %}>Одобренные</option>
+                            <option value="rejected" {% if filters.status == 'rejected' %}selected{% endif %}>Отклоненные</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="shift">Смена</label>
+                        <select id="shift" name="shift" class="form-select">
+                            <option value="">Все</option>
+                            <option value="day" {% if filters.shift == 'day' %}selected{% endif %}>Дневная</option>
+                            <option value="evening" {% if filters.shift == 'evening' %}selected{% endif %}>Вечерняя</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="age_min">Возраст от</label>
+                        <input type="number" id="age_min" name="age_min" class="form-control"
+                               value="{{ filters.age_min or '' }}" placeholder="3">
+                    </div>
+                    <div class="form-group">
+                        <label for="age_max">Возраст до</label>
+                        <input type="number" id="age_max" name="age_max" class="form-control"
+                               value="{{ filters.age_max or '' }}" placeholder="17">
+                    </div>
+                    <div class="form-group">
+                        <label for="swimming_year">Год обучения</label>
+                        <select id="swimming_year" name="swimming_year" class="form-select">
+                            <option value="">Все</option>
+                            <option value="1" {% if filters.swimming_year == 1 %}selected{% endif %}>1 год (начальный)</option>
+                            <option value="2" {% if filters.swimming_year == 2 %}selected{% endif %}>2 года</option>
+                            <option value="3" {% if filters.swimming_year == 3 %}selected{% endif %}>3 года</option>
+                            <option value="4" {% if filters.swimming_year == 4 %}selected{% endif %}>4+ года</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-search"></i> Применить
+                    </button>
+                    <a href="/admin/applications" class="btn btn-secondary">
+                        <i class="fas fa-undo"></i> Сбросить
+                    </a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Список заявок -->
+    <div class="card">
+        <div class="card-header">
+            <h3><i class="fas fa-list"></i> Заявки на зачисление</h3>
+        </div>
+        <div class="card-body">
+            {% if applications %}
+                <div class="table-wrapper">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>Дата</th>
+                                <th>Родитель</th>
+                                <th>Телефон</th>
+                                <th>Ребёнок</th>
+                                <th>Возраст</th>
+                                <th>Смена</th>
+                                <th>Статус</th>
+                                <th>Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for app in applications %}
+                            <tr class="{% if app.status == 'new' %}table-primary{% endif %}">
+                                <td>{{ app.created_at[:10] }}</td>
+                                <td>{{ app.parent_full_name }}</td>
+                                <td>{{ app.parent_phone }}</td>
+                                <td>{{ app.child_full_name }}</td>
+                                <td>{{ app.child_age }} лет</td>
+                                <td>
+                                    {% if app.shift == 'day' %}
+                                        <span class="badge bg-info">Дневная</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">Вечерняя</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <span class="badge {% if app.status == 'new' %}bg-primary{% elif app.status == 'processing' %}bg-warning{% elif app.status == 'approved' %}bg-success{% else %}bg-danger{% endif %}">
+                                        {% if app.status == 'new' %}Новая
+                                        {% elif app.status == 'processing' %}В обработке
+                                        {% elif app.status == 'approved' %}Одобрена
+                                        {% else %}Отклонена{% endif %}
+                                    </span>
+                                </td>
+                                <td>
+                                    <a href="/admin/application/{{ app.id }}" class="btn btn-sm btn-primary">
+                                        <i class="fas fa-eye"></i> Просмотр
+                                    </a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <div class="empty-state text-center py-5">
+                    <div class="empty-icon">
+                        <i class="fas fa-inbox fa-4x text-muted"></i>
+                    </div>
+                    <p class="mt-3">Нет заявок, соответствующих фильтрам</p>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<style>
+.filter-form .form-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 15px;
+    align-items: end;
+}
+
+.filter-form .form-actions {
+    margin-top: 20px;
+    display: flex;
+    gap: 10px;
+}
+</style>
+{% endblock %}

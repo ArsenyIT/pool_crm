@@ -767,18 +767,39 @@ async def add_student_form(
         }
     )
 
+
+# main.py - исправленный фрагмент (замените соответствующие функции)
+
 @app.post("/trainer/group/{group_id}/add_student")
 async def add_student_submit(
-    request: Request,
-    group_id: int,
-    child_id: Annotated[int, Form()],
-    current_user = Depends(get_current_user),
-    db_cursor = Depends(get_db)
+        request: Request,
+        group_id: int,
+        child_id: Annotated[int, Form()],
+        current_user=Depends(get_current_user),
+        db_cursor=Depends(get_db)
 ):
     """Добавляет ученика в группу."""
     require_trainer_or_admin(current_user)
     if not can_manage_group(group_id, current_user, db_cursor):
         raise HTTPException(status_code=403, detail="Нет доступа")
+
+    # Проверяем, существует ли группа
+    db_cursor.execute("SELECT id, max_students FROM groups WHERE id = ?", (group_id,))
+    group = db_cursor.fetchone()
+    if not group:
+        raise HTTPException(status_code=404, detail="Группа не найдена")
+
+    # Проверяем, не переполнена ли группа
+    db_cursor.execute(
+        "SELECT COUNT(*) as cnt FROM enrollments WHERE group_id = ? AND is_active = 1",
+        (group_id,)
+    )
+    enrolled = db_cursor.fetchone()["cnt"]
+    if enrolled >= group["max_students"]:
+        return RedirectResponse(
+            url=f"/trainer/group/{group_id}?error=full",
+            status_code=303
+        )
 
     # Проверяем, не зачислен ли уже
     db_cursor.execute(
@@ -786,7 +807,15 @@ async def add_student_submit(
         (child_id, group_id)
     )
     if db_cursor.fetchone():
-        return RedirectResponse(url=f"/trainer/group/{group_id}?error=already_enrolled", status_code=303)
+        return RedirectResponse(
+            url=f"/trainer/group/{group_id}?error=already_enrolled",
+            status_code=303
+        )
+
+    # Проверяем, существует ли ребёнок
+    db_cursor.execute("SELECT id FROM children WHERE id = ?", (child_id,))
+    if not db_cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Ребёнок не найден")
 
     # Добавляем запись
     db_cursor.execute(
@@ -794,6 +823,20 @@ async def add_student_submit(
         (child_id, group_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     )
     db_cursor.connection.commit()
+
+    # Отправляем уведомление родителю
+    db_cursor.execute(
+        "SELECT parent_id FROM children WHERE id = ?",
+        (child_id,)
+    )
+    child = db_cursor.fetchone()
+    if child:
+        send_notification_to_parent(
+            child["parent_id"],
+            "Зачисление в группу",
+            f"Ваш ребёнок зачислен в группу. Подробности в личном кабинете."
+        )
+
     return RedirectResponse(url=f"/trainer/group/{group_id}?success=added", status_code=303)
 
 @app.post("/trainer/group/{group_id}/remove_student/{child_id}")
@@ -1633,6 +1676,63 @@ async def delete_group(
     db_cursor.execute("DELETE FROM groups WHERE id = ?", (group_id,))
     db_cursor.connection.commit()
     return RedirectResponse(url="/admin/groups?success=deleted", status_code=303)
+
+
+# Добавьте эти эндпоинты в main.py
+
+@app.get("/admin/api/stats")
+async def admin_api_stats(
+        current_user=Depends(get_current_user),
+        db_cursor=Depends(get_db)
+):
+    """API для получения статистики для админ-дашборда."""
+    require_admin(current_user)
+
+    # Новые заявки
+    db_cursor.execute("SELECT COUNT(*) FROM applications WHERE status = 'new'")
+    new_applications = db_cursor.fetchone()[0]
+
+    # Активные группы
+    db_cursor.execute("SELECT COUNT(*) FROM groups WHERE is_active = 1")
+    active_groups = db_cursor.fetchone()[0]
+
+    # Всего учеников (активные зачисления)
+    db_cursor.execute("SELECT COUNT(DISTINCT child_id) FROM enrollments WHERE is_active = 1")
+    total_students = db_cursor.fetchone()[0]
+
+    # Активные тренеры
+    db_cursor.execute("SELECT COUNT(*) FROM trainers WHERE is_active = 1")
+    active_trainers = db_cursor.fetchone()[0]
+
+    return {
+        "new_applications": new_applications,
+        "active_groups": active_groups,
+        "total_students": total_students,
+        "active_trainers": active_trainers
+    }
+
+
+@app.get("/admin/api/recent_applications")
+async def admin_api_recent_applications(
+        current_user=Depends(get_current_user),
+        db_cursor=Depends(get_db)
+):
+    """API для получения последних заявок."""
+    require_admin(current_user)
+
+    db_cursor.execute(
+        """
+        SELECT id, parent_full_name, child_full_name, child_age, status, created_at
+        FROM applications
+        ORDER BY created_at DESC
+        LIMIT 10
+        """
+    )
+    applications = db_cursor.fetchall()
+
+    return {
+        "applications": [dict(app) for app in applications]
+    }
 
 
 
