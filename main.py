@@ -6,6 +6,10 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Optional
 from datetime import date, datetime, timedelta
 
+from init_db import verify_password
+
+import os
+
 from fastapi import (
     FastAPI, Request, HTTPException, Depends, status,
     Form, UploadFile, File, Cookie, Query)
@@ -17,11 +21,11 @@ from fastapi.staticfiles import StaticFiles
 from database import db_instance, get_db
 from init_db import create_tables, seed_test_data, ensure_tables_exist
 
+from vk_bot import start_vk_bot, stop_vk_bot
 
 
 # Простая аутентификация (прямое сравнение строк)
-def verify_password(plain: str, stored: str):
-    return plain == stored
+
 
 
 # ------------------- Управление сессиями -------------------
@@ -239,33 +243,35 @@ def auto_select_group(child_age: int, swimming_years: int, shift: str, db_cursor
 # Жизненный цикл приложения
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Управляет жизненным циклом приложения:
-    - при запуске проверяет и инициализирует БД
-    - при завершении закрывает соединение с БД
-    """
-
+    """Управляет жизненным циклом приложения"""
     print("Запуск приложения...")
 
-    # Проверяем, существуют ли таблицы       ensure_tables_exist() создаёт таблицы, если их нет
-    tables_created = ensure_tables_exist() # и возвращает True, если были созданы
-
-    # Если таблицы были только что созданы, заполняем их тестовыми данными
+    tables_created = ensure_tables_exist()
     if tables_created:
         print("Таблицы созданы, заполняем тестовыми данными...")
         seed_test_data()
-    else: # Таблицы уже существуют. Проверка наличия данных
+    else:
         from database import get_db_cursor
         with get_db_cursor() as cursor:
             cursor.execute("SELECT COUNT(*) FROM trainers")
             if cursor.fetchone()[0] == 0:
                 seed_test_data()
     upgrade_database()
+
+    # ЗАПУСКАЕМ VK БОТА
+    try:
+        from database import get_db_cursor
+        with get_db_cursor() as cursor:
+            start_vk_bot(cursor)
+    except Exception as e:
+        print(f"⚠️ VK Bot startup error: {e}")
+
     print("Приложение готово")
+    yield
 
-    yield  # Здесь работает само приложение
+    # ОСТАНАВЛИВАЕМ VK БОТА
+    stop_vk_bot()
 
-    # Завершение работы
     print("Остановка приложения, закрытие соединения с БД...")
     db_instance.close()
     print("Соединение закрыто")
@@ -547,12 +553,14 @@ async def parent_profile(
 
 
 # ---------- Профили детей ----------
+# main.py - замените ВСЮ функцию child_details
+
 @app.get("/parent/child/{child_id}", response_class=HTMLResponse)
 async def child_details(
-    request: Request,
-    child_id: int,
-    current_user = Depends(get_current_user),
-    db_cursor = Depends(get_db)
+        request: Request,
+        child_id: int,
+        current_user=Depends(get_current_user),
+        db_cursor=Depends(get_db)
 ):
     """
     Детальная страница ребёнка: информация, группа, расписание, посещаемость.
@@ -565,9 +573,16 @@ async def child_details(
         "SELECT * FROM children WHERE id = ? AND parent_id = ?",
         (child_id, parent_id)
     )
-    child = db_cursor.fetchone()
-    if not child:
+    child_row = db_cursor.fetchone()
+    if not child_row:
         raise HTTPException(status_code=404, detail="Ребёнок не найден")
+
+    # Преобразуем child в словарь
+    child = dict(child_row)
+
+    # Преобразуем created_at если есть
+    if child.get('created_at') and hasattr(child['created_at'], 'strftime'):
+        child['created_at'] = child['created_at'].strftime('%Y-%m-%d %H:%M:%S')
 
     # Текущее зачисление
     db_cursor.execute(
@@ -586,7 +601,7 @@ async def child_details(
 
     # Преобразуем enrolled_at в строку, если это datetime
     if group and group.get('enrolled_at') and hasattr(group['enrolled_at'], 'strftime'):
-        group['enrolled_at'] = group['enrolled_at'].strftime('%Y-%m-%d %H:%M:%S')  # или просто '%Y-%m-%d'
+        group['enrolled_at'] = group['enrolled_at'].strftime('%Y-%m-%d %H:%M:%S')
 
     # Расписание занятий группы (если есть)
     schedule_items = []
@@ -600,14 +615,25 @@ async def child_details(
             """,
             (group["id"],)
         )
-        schedule_items = db_cursor.fetchall()
+        schedule_rows = db_cursor.fetchall()
+        schedule_items = []
+        for row in schedule_rows:
+            item = dict(row)
+            # Преобразуем время, если нужно
+            if item.get('start_time') and hasattr(item['start_time'], 'strftime'):
+                item['start_time'] = item['start_time'].strftime('%H:%M:%S')
+            if item.get('end_time') and hasattr(item['end_time'], 'strftime'):
+                item['end_time'] = item['end_time'].strftime('%H:%M:%S')
+            schedule_items.append(item)
 
     # Посещаемость: последние 30 дней
-    today = date.today()
-    # Найдём enrollment_id для этого ребёнка
     attendance = []
     if group:
-        db_cursor.execute("SELECT id FROM enrollments WHERE child_id = ? AND is_active = 1", (child_id,))
+        # Найдём enrollment_id для этого ребёнка
+        db_cursor.execute(
+            "SELECT id FROM enrollments WHERE child_id = ? AND group_id = ? AND is_active = 1",
+            (child_id, group["id"])
+        )
         enrollment_record = db_cursor.fetchone()
         if enrollment_record:
             db_cursor.execute(
@@ -620,9 +646,8 @@ async def child_details(
                 """,
                 (enrollment_record["id"],)
             )
-            rows = db_cursor.fetchall()
-            # Преобразуем даты в строки
-            for row in rows:
+            attendance_rows = db_cursor.fetchall()
+            for row in attendance_rows:
                 rec = dict(row)
                 if rec.get('date') and hasattr(rec['date'], 'strftime'):
                     rec['date'] = rec['date'].strftime('%Y-%m-%d')
@@ -633,15 +658,13 @@ async def child_details(
         "child_details.html",
         {
             "request": request,
-            "child": dict(child),
+            "child": child,
             "group": group,
             "schedule": schedule_items,
             "attendance": attendance,
             "current_user": current_user
         }
     )
-
-
 
 # ======================== ТРЕНЕР ========================
 
@@ -1814,3 +1837,54 @@ async def dashboard_redirect(
         return templates.TemplateResponse(request, "admin_dashboard.html", {"request": request, "current_user": current_user})
     else:
         return RedirectResponse(url="/login", status_code=303)
+
+
+# Добавьте в main.py (после других эндпоинтов)
+
+@app.get("/api/vk/auth")
+async def vk_auth_callback(
+        request: Request,
+        code: Optional[str] = Query(None),
+        db_cursor=Depends(get_db)
+):
+    """Callback для VK ID авторизации (OAuth)"""
+    if not code:
+        return RedirectResponse(url="/login?error=vk_auth_failed")
+
+    # Здесь будет обмен code на access_token
+    # Пока возвращаем заглушку
+    return {"status": "success", "message": "VK auth callback received"}
+
+
+@app.post("/api/vk/webhook")
+async def vk_webhook(
+        request: Request,
+        db_cursor=Depends(get_db)
+):
+    """Webhook для VK Callback API (альтернатива LongPoll)"""
+    try:
+        data = await request.json()
+
+        # Проверка на подтверждение сервера
+        if data.get("type") == "confirmation":
+            from config import VK_CONFIG
+            return {"response": VK_CONFIG.get("confirmation_code", "000000")}
+
+        # Обработка новых сообщений
+        if data.get("type") == "message_new":
+            from vk_bot import vk_bot_instance
+            if vk_bot_instance:
+                message = data["object"]["message"]
+                user_id = message["from_id"]
+                text = message.get("text", "")
+
+                response = vk_bot_instance.handle_message(user_id, text)
+                if response:
+                    vk_bot_instance.send_message(user_id, response)
+
+            return {"response": "ok"}
+
+        return {"response": "ok"}
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return {"response": "error"}

@@ -1,4 +1,4 @@
-<!-- templates/child_details.html (полная версия) -->
+<!-- templates/child_details.html (исправленная версия) -->
 {% extends "base.html" %}
 
 {% block title %}{{ child.full_name }} - Карточка ученика - Swim CRM{% endblock %}
@@ -135,11 +135,25 @@
                     <h3><i class="fas fa-chart-line"></i> Статистика посещаемости</h3>
                 </div>
                 <div class="card-body">
-                    {% set present_count = attendance|selectattr('status', 'equalto', 'present')|list|length if attendance else 0 %}
-                    {% set absent_count = attendance|selectattr('status', 'equalto', 'absent')|list|length if attendance else 0 %}
-                    {% set sick_count = attendance|selectattr('status', 'equalto', 'sick')|list|length if attendance else 0 %}
-                    {% set excused_count = attendance|selectattr('status', 'equalto', 'excused')|list|length if attendance else 0 %}
-                    {% set total = present_count + absent_count + sick_count + excused_count %}
+                    {# Ручной подсчёт статистики вместо selectattr #}
+                    {% set present_count = 0 %}
+                    {% set absent_count = 0 %}
+                    {% set sick_count = 0 %}
+                    {% set excused_count = 0 %}
+
+                    {% for record in attendance %}
+                        {% if record.status == 'present' %}
+                            {% set present_count = present_count + 1 %}
+                        {% elif record.status == 'absent' %}
+                            {% set absent_count = absent_count + 1 %}
+                        {% elif record.status == 'sick' %}
+                            {% set sick_count = sick_count + 1 %}
+                        {% elif record.status == 'excused' %}
+                            {% set excused_count = excused_count + 1 %}
+                        {% endif %}
+                    {% endfor %}
+
+                    {% set total = attendance|length %}
 
                     <div class="stats-grid">
                         <div class="stat-card">
@@ -307,6 +321,13 @@
     padding: 15px;
     background: #f7fafc;
     border-radius: 16px;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 15px;
+    margin-bottom: 20px;
 }
 </style>
 {% endblock %}
