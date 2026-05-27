@@ -99,6 +99,15 @@ def get_current_user(
     return None
 
 
+def format_dates_in_dict(data: dict, date_fields: list) -> dict:
+    """Преобразует datetime-поля в строки формата 'YYYY-MM-DD HH:MM:SS'"""
+    for field in date_fields:
+        if field in data and data[field] is not None:
+            if hasattr(data[field], 'strftime'):
+                data[field] = data[field].strftime('%Y-%m-%d %H:%M:%S')
+    return data
+
+
 # Проверка ролей/прав
 def require_parent(current_user: Optional[dict]):
     if not current_user or current_user["type"] != "parent":
@@ -109,10 +118,9 @@ def require_trainer(current_user: Optional[dict]):
         raise HTTPException(status_code=403, detail="Доступ только для тренеров")
 
 def require_admin(current_user: Optional[dict]):
-    if not current_user or current_user["type"] != "trainer" or not current_user.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Доступ только для админов")
+    if not current_user or current_user["type"] != "admin":
+        raise HTTPException(status_code=403, detail="Доступ только для администратора")
 
-# Для удобства: комбинированные проверки (например, тренер или админ)
 def require_trainer_or_admin(current_user: Optional[dict]):
     if not current_user or current_user["type"] not in ("trainer", "admin"):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
@@ -288,6 +296,26 @@ async def home(request: Request):
         {"request": request}
     )
 
+
+# ---------- Галерея ----------
+@app.get("/gallery", response_class=HTMLResponse)
+async def gallery_page(request: Request):
+    """ Страница галереи. """
+    return templates.TemplateResponse(request, "gallery.html", {"request": request})
+
+@app.get("/api/gallery/images")
+async def get_gallery_images():
+    """ Возвращает список относительных путей к изображениям из папки static/images/gallery. """
+    gallery_dir = "static/images/gallery"
+    if not os.path.exists(gallery_dir):
+        raise HTTPException(status_code=404, detail="Папка галереи не найдена")
+
+    extensions = ('.jpg', '.jpeg', '.png', '.gif', '.webp')
+    images = []
+    for filename in sorted(os.listdir(gallery_dir)):
+        if filename.lower().endswith(extensions):
+            images.append(f"/static/images/gallery/{filename}")
+    return {"images": images}
 
 # ---------- Страница входа для всех пользователей ----------
 @app.get("/login", response_class=HTMLResponse)
@@ -556,6 +584,10 @@ async def child_details(
     enrollment = db_cursor.fetchone()
     group = dict(enrollment) if enrollment else None
 
+    # Преобразуем enrolled_at в строку, если это datetime
+    if group and group.get('enrolled_at') and hasattr(group['enrolled_at'], 'strftime'):
+        group['enrolled_at'] = group['enrolled_at'].strftime('%Y-%m-%d %H:%M:%S')  # или просто '%Y-%m-%d'
+
     # Расписание занятий группы (если есть)
     schedule_items = []
     if group:
@@ -573,6 +605,7 @@ async def child_details(
     # Посещаемость: последние 30 дней
     today = date.today()
     # Найдём enrollment_id для этого ребёнка
+    attendance = []
     if group:
         db_cursor.execute("SELECT id FROM enrollments WHERE child_id = ? AND is_active = 1", (child_id,))
         enrollment_record = db_cursor.fetchone()
@@ -587,11 +620,13 @@ async def child_details(
                 """,
                 (enrollment_record["id"],)
             )
-            attendance = db_cursor.fetchall()
-        else:
-            attendance = []
-    else:
-        attendance = []
+            rows = db_cursor.fetchall()
+            # Преобразуем даты в строки
+            for row in rows:
+                rec = dict(row)
+                if rec.get('date') and hasattr(rec['date'], 'strftime'):
+                    rec['date'] = rec['date'].strftime('%Y-%m-%d')
+                attendance.append(rec)
 
     return templates.TemplateResponse(
         request,
@@ -834,7 +869,8 @@ async def add_student_submit(
         send_notification_to_parent(
             child["parent_id"],
             "Зачисление в группу",
-            f"Ваш ребёнок зачислен в группу. Подробности в личном кабинете."
+            f"Ваш ребёнок зачислен в группу. Подробности в личном кабинете.",
+            db_cursor
         )
 
     return RedirectResponse(url=f"/trainer/group/{group_id}?success=added", status_code=303)
@@ -1204,7 +1240,19 @@ async def admin_applications(
 
     query += " ORDER BY created_at DESC"
     db_cursor.execute(query, params)
-    applications = db_cursor.fetchall()
+
+    # Вместо прямого fetchall() преобразование дат
+    rows = db_cursor.fetchall()
+    # Преобразуем каждую заявку
+    applications = []
+    for row in rows:
+        app = dict(row)
+        # Преобразуем поле created_at (и возможно processed_at)
+        if app.get('created_at') and hasattr(app['created_at'], 'strftime'):
+            app['created_at'] = app['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+        if app.get('processed_at') and hasattr(app['processed_at'], 'strftime'):
+            app['processed_at'] = app['processed_at'].strftime('%Y-%m-%d %H:%M:%S')
+        applications.append(app)
 
     # Для отображения списка групп в форме одобрения
     db_cursor.execute(
@@ -1358,7 +1406,8 @@ async def approve_application(
     send_notification_to_parent(
         parent_id,
         "Заявка одобрена",
-        f"Ваш ребёнок {app['child_full_name']} зачислен в группу '{group_info['name']}'. Расписание занятий доступно в личном кабинете."
+        f"Ваш ребёнок {app['child_full_name']} зачислен в группу '{group_info['name']}'. Расписание занятий доступно в личном кабинете.",
+        db_cursor
     )
 
     return RedirectResponse(url="/admin/applications?success=approved", status_code=303)
@@ -1728,7 +1777,17 @@ async def admin_api_recent_applications(
         LIMIT 10
         """
     )
-    applications = db_cursor.fetchall()
+    rows = db_cursor.fetchall()
+    # Преобразуем каждую заявку
+    applications = []
+    for row in rows:
+        app = dict(row)
+        # Преобразуем поле created_at (и возможно processed_at)
+        if app.get('created_at') and hasattr(app['created_at'], 'strftime'):
+            app['created_at'] = app['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+        if app.get('processed_at') and hasattr(app['processed_at'], 'strftime'):
+            app['processed_at'] = app['processed_at'].strftime('%Y-%m-%d %H:%M:%S')
+        applications.append(app)
 
     return {
         "applications": [dict(app) for app in applications]
